@@ -101,21 +101,37 @@ async function aquecerContas() {
 
     // Verifica o status de todas as instâncias e coloca na fila de aquecimento
     for (const instancia of instancias) {
-        const status = await verificarStatusEAtualizarCSV(instancia);
-        if (status.connected) {
-            instanciasAquecidas.push(instancia);
+        try {
+            const status = await verificarStatusEAtualizarCSV(instancia);
+            if (status.connected) {
+                instanciasAquecidas.push(instancia);
+            }
+        } catch (error) {
+            console.error(`Erro ao verificar status da instância ${instancia.nome}:`, error);
         }
     }
 
-    for (const instancia of instanciasAquecidas) {
-        for (const outraInstancia of instancias) {
-            if (instancia.nome !== outraInstancia.nome) {
-                await enviarMensagem(instancia, outraInstancia, 'Mensagem de aquecimento.');
-                const delay = Math.floor(Math.random() * 60 * 1000);
-                await new Promise(resolve => setTimeout(resolve, delay));
+    // Envia mensagens de aquecimento com atrasos específicos para cada instância
+    const promises = instanciasAquecidas.map(instancia => {
+        return (async () => {
+            for (const outraInstancia of instancias) {
+                if (instancia.nome !== outraInstancia.nome) {
+                    try {
+                        await enviarMensagem(instancia, outraInstancia, 'Mensagem de aquecimento.');
+                        // Define um atraso específico para cada instância
+                        const delay = Math.floor(Math.random() * 60 * 1000);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    } catch (error) {
+                        console.error(`Erro ao enviar mensagem de ${instancia.nome} para ${outraInstancia.nome}:`, error);
+                    }
+                }
             }
-        }
-    }
+        })();
+    });
+
+    // Aguarda todas as promessas serem resolvidas
+    await Promise.all(promises);
+    console.log('Aquecimento concluído para todas as instâncias.');
 }
 
 // Monitorar alterações no arquivo JSON e aquecer contas quando houver mudanças
