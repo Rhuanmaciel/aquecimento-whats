@@ -1,5 +1,6 @@
+const chokidar = require('chokidar');
 const request = require('request');
-const fs = require('fs').promises; // Utiliza fs.promises para operações assíncronas
+const fs = require('fs').promises;
 const path = require('path');
 const csvWriter = require('csv-writer').createObjectCsvWriter;
 
@@ -16,18 +17,12 @@ function calcularDiasAtivos(dataCadastro) {
     return Math.floor((hoje - dataCadastroDate) / (1000 * 60 * 60 * 24));
 }
 
-// Função para atualizar o JSON com uma nova instância
-async function atualizarInstancias(instancias) {
-    const jsonPath = path.resolve(__dirname, 'instancias.json');
-    await fs.writeFile(jsonPath, JSON.stringify(instancias, null, 2));
-}
-
 // Função para verificar o status de uma instância e atualizar o CSV
 async function verificarStatusEAtualizarCSV(instancia) {
     return new Promise((resolve, reject) => {
         const options = {
             method: 'GET',
-            url: `${instancia.api_url}status`, // URL para status
+            url: `${instancia.api_url}status`,
             headers: {
                 accept: 'application/json',
                 'client-token': instancia.token
@@ -54,7 +49,7 @@ async function verificarStatusEAtualizarCSV(instancia) {
                     {id: 'ultima_atividade', title: 'Última Atividade'},
                     {id: 'expira_em', title: 'Expira em'}
                 ],
-                append: true // Adiciona aos dados existentes
+                append: true
             });
 
             const dadosCSV = [{
@@ -63,7 +58,7 @@ async function verificarStatusEAtualizarCSV(instancia) {
                 dias_ativos: calcularDiasAtivos(instancia.cadastrado_em),
                 status: status.connected ? 'Conectado' : 'Desconectado',
                 ultima_atividade: new Date().toISOString(),
-                expira_em: expiraEm.toISOString().split('T')[0] // Apenas a data no formato YYYY-MM-DD
+                expira_em: expiraEm.toISOString().split('T')[0]
             }];
 
             writer.writeRecords(dadosCSV).then(() => {
@@ -79,7 +74,7 @@ function enviarMensagem(instancia, destinatario, mensagem) {
     return new Promise((resolve, reject) => {
         const options = {
             method: 'POST',
-            url: `${instancia.api_url}send-text-status`, // URL para enviar mensagens
+            url: `${instancia.api_url}send-text-status`,
             headers: {
                 'content-type': 'application/json',
                 'client-token': instancia.token
@@ -102,34 +97,68 @@ function enviarMensagem(instancia, destinatario, mensagem) {
 // Função para aquecer as contas
 async function aquecerContas() {
     const instancias = await lerInstancias();
+    const instanciasAquecidas = [];
 
-    // Verificar status e atualizar CSV para todas as instâncias
-    for (const instancia of instancias) {
-        await verificarStatusEAtualizarCSV(instancia);
-    }
-
-    // Enviar mensagens entre instâncias
+    // Verifica o status de todas as instâncias e coloca na fila de aquecimento
     for (const instancia of instancias) {
         const status = await verificarStatusEAtualizarCSV(instancia);
         if (status.connected) {
-            for (const outraInstancia of instancias) {
-                if (instancia.nome !== outraInstancia.nome) {
-                    await enviarMensagem(instancia, outraInstancia, 'Mensagem de aquecimento.');
-                    const delay = Math.floor(Math.random() * 60 * 1000); // Delay randômico entre 0 e 60 segundos
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                }
+            instanciasAquecidas.push(instancia);
+        }
+    }
+
+    for (const instancia of instanciasAquecidas) {
+        for (const outraInstancia of instancias) {
+            if (instancia.nome !== outraInstancia.nome) {
+                await enviarMensagem(instancia, outraInstancia, 'Mensagem de aquecimento.');
+                const delay = Math.floor(Math.random() * 60 * 1000);
+                await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
     }
 }
 
-// Verificação de status e aquecimento contínuo
-async function iniciarAquecimento() {
-    while (true) {
+// Monitorar alterações no arquivo JSON e aquecer contas quando houver mudanças
+const watcher = chokidar.watch('instancias.json', { persistent: true });
+
+watcher.on('change', async () => {
+    console.log('Arquivo instancias.json alterado. Atualizando...');
+    try {
         await aquecerContas();
-        await new Promise(resolve => setTimeout(resolve, 5 * 60 * 1000)); // Espera de 5 minutos
+    } catch (error) {
+        console.error('Erro ao aquecer contas:', error);
+    }
+});
+
+// Função para verificar novas instâncias periodicamente
+async function verificarNovasInstancias() {
+    let instanciasAnteriores = [];
+    try {
+        instanciasAnteriores = await lerInstancias();
+    } catch (error) {
+        console.error('Erro ao ler instâncias:', error);
+        return;
+    }
+
+    while (true) {
+        try {
+            const instanciasAtuais = await lerInstancias();
+            const novasInstancias = instanciasAtuais.filter(instancia => 
+                !instanciasAnteriores.some(antiga => antiga.nome === instancia.nome)
+            );
+
+            if (novasInstancias.length > 0) {
+                console.log('Novas instâncias detectadas:', novasInstancias);
+                await aquecerContas(); // Atualiza com as novas instâncias
+            }
+            instanciasAnteriores = instanciasAtuais;
+        } catch (error) {
+            console.error('Erro ao verificar novas instâncias:', error);
+        }
+        // Espera uma hora antes de verificar novamente
+        await new Promise(resolve => setTimeout(resolve, 60 * 60 * 1000));
     }
 }
 
-// Iniciar o processo de aquecimento
-iniciarAquecimento().catch(console.error);
+// Iniciar a verificação de novas instâncias
+verificarNovasInstancias().catch(console.error);
